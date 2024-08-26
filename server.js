@@ -6,29 +6,33 @@ const path = require('path');
 const fs = require('fs');
 const Tesseract = require('tesseract.js');
 const PDFDocument = require('pdfkit');
-
-// Conectando ao MongoDB
-const mongoUri = process.env.MONGODB_URI;
-mongoose.connect(mongoUri, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => console.log('Conectado ao MongoDB'))
-.catch((error) => console.error('Erro ao conectar ao MongoDB:', error));
+const { body, validationResult } = require('express-validator');
 
 const app = express();
 
-// Middleware para upload de arquivos
-app.use(fileUpload());
+// Conectando ao MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('Conectado ao MongoDB'))
+    .catch((error) => console.error('Erro ao conectar ao MongoDB:', error));
 
-// Configurar para servir arquivos estáticos da pasta public
-app.use(express.static('public'));
+// Middleware para upload de arquivos
+app.use(fileUpload({
+    limits: { fileSize: 5 * 1024 * 1024 }, // Limite de 5MB para o upload
+    abortOnLimit: true,
+}));
+
+// Configuração para servir arquivos estáticos da pasta public
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
+
 
 // Modelo do MongoDB
 const Placa = mongoose.model('Placa', new mongoose.Schema({
-    placa: String,
-    cidade: String,
+    placa: { type: String, required: true },
+    cidade: { type: String, required: true },
     data: { type: Date, default: Date.now }
 }));
+
 
 // Função para reconhecer placa usando Tesseract
 async function reconhecerPlaca(filePath) {
@@ -42,24 +46,42 @@ async function reconhecerPlaca(filePath) {
     }
 }
 
-// Rota POST para cadastro de placa
-app.post('/cadastroPlaca', async (req, res) => {
-    console.log('Requisição recebida em /cadastroPlaca');
-    console.log('Arquivos recebidos:', req.files);
-    console.log('Dados do corpo:', req.body);
 
+// Rota POST para cadastro de placa
+app.post('/cadastroPlaca', [
+    // Validação e sanitização
+    body('cidade').isString().trim().notEmpty().withMessage('Cidade é necessária.')
+], async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
+    console.log('Requisição recebida em /cadastroPlaca');
     const foto = req.files?.foto;
     const { cidade } = req.body;
 
     if (!foto) {
-        console.error('Erro: Nenhum arquivo de foto encontrado');
         return res.status(400).json({ error: 'Arquivo de foto é necessário' });
+    }
+
+    // Verificar tipo MIME para garantir que o arquivo é uma imagem
+    const allowedMimeTypes = ['image/jpeg', 'image/png'];
+    if (!allowedMimeTypes.includes(foto.mimetype)) {
+        return res.status(400).json({ error: 'Apenas arquivos de imagem (JPEG/PNG) são permitidos' });
     }
 
     console.log('Cidade:', cidade);
     console.log('Nome do arquivo da foto:', foto.name);
 
-    const fotoPath = path.join(__dirname, 'uploads', foto.name);
+    const uploadDir = path.join(__dirname, 'public', 'uploads');
+    const fotoPath = path.join(uploadDir, foto.name);
+
+    // Verifica se o diretório existe, se não, cria
+    if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
     await foto.mv(fotoPath);
 
     try {
@@ -81,6 +103,10 @@ app.post('/cadastroPlaca', async (req, res) => {
         fs.unlinkSync(fotoPath);
     }
 });
+
+
+
+
 
 // Rota GET para gerar relatório em PDF por cidade
 app.get('/relatorio/cidade/:cidade', async (req, res) => {
@@ -109,6 +135,7 @@ app.get('/relatorio/cidade/:cidade', async (req, res) => {
     doc.end();
 });
 
+
 // Rota GET para consultar uma placa específica
 app.get('/consulta/:placa', async (req, res) => {
     const { placa } = req.params;
@@ -121,7 +148,10 @@ app.get('/consulta/:placa', async (req, res) => {
     res.json(registro);
 });
 
+
+// Inicia o servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
 });
+
